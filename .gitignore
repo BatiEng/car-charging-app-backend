@@ -1,0 +1,3 @@
+database.sql
+migration_*.sql
+mock_data.sql

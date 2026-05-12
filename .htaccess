@@ -1,0 +1,5 @@
+RewriteEngine On
+
+# Route extensionless requests to .php files (e.g. /api/auth → auth.php)
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule ^([^/]+)$ $1.php [L]

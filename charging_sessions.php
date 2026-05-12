@@ -318,6 +318,7 @@ if ($method === 'PUT') {
             VALUES (?,?,'debit','Overstay cezası – {$overstayMins} dakika',?)
         ")->execute([$uid, $overstayPenalty, $balAfterPenalty]);
         if ((int)$uid === (int)$user['id']) $_SESSION['user']['wallet_balance'] = $balAfterPenalty;
+        checkWalletAlert($uid, $balAfterPenalty);
     }
 
     // Receipt JSON

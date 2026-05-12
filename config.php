@@ -95,11 +95,22 @@ function notify(int $userId, string $type, string $title, string $message): void
 }
 
 // ─── Check wallet balance after deduction; send low-balance alert ───
+// Son 1 saatte zaten bildirim gönderildiyse tekrar gönderme
 function checkWalletAlert(int $userId, float $balance): void {
-    if ($balance < 200) {
-        notify($userId, 'wallet_low',
-            'Low Wallet Balance',
-            "Your wallet balance is " . number_format($balance, 2) . " TL. Please top up to continue using the service."
-        );
-    }
+    if ($balance >= 200) return;
+
+    // Son 1 saatte wallet_low bildirimi var mı?
+    $recent = db()->prepare("
+        SELECT id FROM notifications
+        WHERE user_id = ? AND type = 'wallet_low'
+          AND created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)
+        LIMIT 1
+    ");
+    $recent->execute([$userId]);
+    if ($recent->fetch()) return; // Zaten gönderilmiş, atla
+
+    notify($userId, 'wallet_low',
+        '⚠️ Düşük Bakiye Uyarısı',
+        "Cüzdan bakiyeniz " . number_format($balance, 2) . " TL'ye düştü. Hizmetlere kesintisiz erişim için lütfen bakiye yükleyin."
+    );
 }

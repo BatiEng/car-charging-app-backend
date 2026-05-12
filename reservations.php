@@ -149,7 +149,7 @@ if ($method === 'POST') {
     db()->prepare("
         INSERT INTO wallet_transactions (user_id, amount, type, description, balance_after)
         VALUES (?,?,'debit',?,?)
-    ")->execute([$uid, $estimatedCost, "Reservation hold – charger #{$ch['id']}", $balance]);
+    ")->execute([$uid, $estimatedCost, "Rezervasyon – {$ch['station_name']} / {$ch['charger_code']}", $balance]);
 
     // Update session wallet
     $_SESSION['user']['wallet_balance'] = $balance;

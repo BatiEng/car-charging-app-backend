@@ -37,20 +37,24 @@ if ($method === 'POST') {
     $stmt->execute([$user['id'], $station_id, $charger_id, $title, $description]);
     $newId = (int)db()->lastInsertId();
 
-    // Operatöre bildirim gönder
-    $opRow = db()->prepare("SELECT operator_id FROM stations WHERE id = ?");
-    $opRow->execute([$station_id]);
-    $st = $opRow->fetch();
+    // İstasyon adı ve operator_id
+    $stRow = db()->prepare("SELECT name, operator_id FROM stations WHERE id = ?");
+    $stRow->execute([$station_id]);
+    $st          = $stRow->fetch();
+    $stationName = $st['name'] ?? 'İstasyon';
+
+    $notifTitle = '🔧 Yeni Arıza Bildirimi';
+    $notifMsg   = "\"$stationName\" istasyonunda yeni bir arıza kaydı oluşturuldu: $title";
+
+    // İlgili operatöre bildirim
     if ($st && $st['operator_id']) {
-        $stName = db()->prepare("SELECT name FROM stations WHERE id = ?");
-        $stName->execute([$station_id]);
-        $stationName = $stName->fetchColumn() ?: 'İstasyon';
-        notify(
-            (int)$st['operator_id'],
-            'station_issue_reported',
-            'Yeni Sorun Bildirimi',
-            "\"$stationName\" istasyonu için yeni bir sorun bildirimi var: $title"
-        );
+        notify((int)$st['operator_id'], 'station_issue_reported', $notifTitle, $notifMsg);
+    }
+
+    // Tüm adminlere bildirim
+    $admins = db()->query("SELECT id FROM users WHERE role = 'admin'")->fetchAll();
+    foreach ($admins as $admin) {
+        notify((int)$admin['id'], 'station_issue_reported', $notifTitle, $notifMsg);
     }
 
     respond(['ok' => true, 'id' => $newId], 201);

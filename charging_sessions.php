@@ -83,12 +83,14 @@ if ($method === 'GET') {
     } else {
         $stmt = db()->prepare("
             SELECT cs.*, v.plate, v.brand, v.model,
-                   c.type AS charger_type, c.power, c.connector_type, c.price_per_kwh,
-                   s.name AS station_name, s.address AS station_address
+                   c.type AS charger_type, c.power, c.connector_type, c.price_per_kwh, c.charger_code,
+                   s.name AS station_name, s.address AS station_address,
+                   r.reservation_date, r.start_time AS res_start_time, r.end_time AS res_end_time
             FROM charging_sessions cs
-            JOIN vehicles v ON v.id = cs.vehicle_id
-            JOIN chargers c ON c.id = cs.charger_id
-            JOIN stations s ON s.id = c.station_id
+            JOIN vehicles v   ON v.id = cs.vehicle_id
+            JOIN chargers c   ON c.id = cs.charger_id
+            JOIN stations s   ON s.id = c.station_id
+            JOIN reservations r ON r.id = cs.reservation_id
             WHERE cs.user_id = ?
             ORDER BY cs.created_at DESC
         ");
@@ -107,10 +109,12 @@ if ($method === 'POST' && $action === 'extend') {
     $stmt = db()->prepare("
         SELECT cs.extension_count, cs.charger_id,
                r.id AS res_id, r.end_time AS res_end, r.reservation_date,
-               c.power, c.price_per_kwh
+               c.power, c.price_per_kwh, c.charger_code,
+               s.name AS station_name
         FROM charging_sessions cs
         JOIN reservations r ON r.id = cs.reservation_id
         JOIN chargers     c ON c.id = cs.charger_id
+        JOIN stations     s ON s.id = c.station_id
         WHERE cs.id = ? AND cs.user_id = ? AND cs.status = 'active'
     ");
     $stmt->execute([$sessId, (int)$user['id']]);
@@ -152,8 +156,11 @@ if ($method === 'POST' && $action === 'extend') {
     // Wallet transaction record
     db()->prepare("
         INSERT INTO wallet_transactions (user_id, amount, type, description, balance_after)
-        VALUES (?, ?, 'debit', 'Oturum uzatma – 1 saat', ?)
-    ")->execute([$uid, $cost, $newBal]);
+        VALUES (?, ?, 'debit', ?, ?)
+    ")->execute([$uid, $cost, "Süre uzatma – {$sess['station_name']} / {$sess['charger_code']}", $newBal]);
+
+    // 200 TL altına düştüyse bildirim gönder
+    checkWalletAlert($uid, $newBal);
 
     // Extend reservation end_time
     db()->prepare("UPDATE reservations SET end_time=? WHERE id=?")
@@ -180,6 +187,9 @@ if ($method === 'POST') {
     $resId = (int)($b['reservation_id'] ?? 0);
 
     if (!$pin || !$resId) err('vehicle_pin and reservation_id required');
+
+    // Gelmeme cezası kontrolü — şarj başlatılmadan önce çalıştır
+    autoNoShowCancel();
 
     // Load reservation with vehicle + charger
     $stmt = db()->prepare("
@@ -212,6 +222,25 @@ if ($method === 'POST') {
         err("Too early. Your reservation starts in {$mins} minutes. You can check in 15 minutes before.");
     }
     if ($now > $resEnd) err('Reservation time has expired');
+
+    // ── Aktif seans çakışma kontrolü: aynı şarjcıda başka bir seans devam ediyor mu? ──
+    $activeCheck = db()->prepare("
+        SELECT cs.id, u.name AS other_user
+        FROM charging_sessions cs
+        JOIN users u ON u.id = cs.user_id
+        WHERE cs.charger_id = ? AND cs.status = 'active'
+        LIMIT 1
+    ");
+    $activeCheck->execute([$res['charger_id']]);
+    $ongoingSession = $activeCheck->fetch();
+    if ($ongoingSession) {
+        err(
+            "Bu şarjcı üzerinde şu anda aktif bir şarj seansı bulunmaktadır. " .
+            "Bir önceki kullanıcının seansı sona erene kadar şarj başlatamazsınız. " .
+            "Yaşadığınız sıkıntı için özür dileriz.",
+            409
+        );
+    }
 
     // Mark charger occupied
     db()->prepare("UPDATE chargers SET status='occupied' WHERE id=?")->execute([$res['charger_id']]);
@@ -266,7 +295,7 @@ if ($method === 'PUT') {
     if (!$id) err('Session id required');
 
     $stmt = db()->prepare("
-        SELECT cs.*, c.price_per_kwh, c.power AS charger_power, v.battery_kwh,
+        SELECT cs.*, c.price_per_kwh, c.power AS charger_power, c.charger_code, v.battery_kwh,
                r.amount_deducted, r.estimated_cost,
                s.name AS station_name, s.address
         FROM charging_sessions cs
@@ -284,7 +313,7 @@ if ($method === 'PUT') {
 
     $b              = body();
     $kwhCharged     = round((float)($b['kwh_consumed']    ?? 0), 3);
-    $overstayMins   = max(0, (int)($b['overstay_minutes'] ?? 0));
+    $overstayMins   = max(0, (float)($b['overstay_minutes'] ?? 0));
     $endTime        = demoNowSQL();
     $totalCost      = round($kwhCharged * (float)$sess['price_per_kwh'], 2);
     $uid            = (int)$sess['user_id'];
@@ -302,8 +331,8 @@ if ($method === 'PUT') {
         $balance = (float)$newBal->fetchColumn();
         db()->prepare("
             INSERT INTO wallet_transactions (user_id, amount, type, description, balance_after)
-            VALUES (?,?,'credit','Refund – unused charging time',?)
-        ")->execute([$uid, $refund, $balance]);
+            VALUES (?,?,'credit',?,?)
+        ")->execute([$uid, $refund, "İade – {$sess['station_name']} / {$sess['charger_code']}", $balance]);
         if ((int)$uid === (int)$user['id']) $_SESSION['user']['wallet_balance'] = $balance;
     }
 
@@ -313,10 +342,11 @@ if ($method === 'PUT') {
         $penaltyBal = db()->prepare("SELECT wallet_balance FROM users WHERE id=?");
         $penaltyBal->execute([$uid]);
         $balAfterPenalty = (float)$penaltyBal->fetchColumn();
+        $overstayMinsRounded = round($overstayMins, 1);
         db()->prepare("
             INSERT INTO wallet_transactions (user_id, amount, type, description, balance_after)
-            VALUES (?,?,'debit','Overstay cezası – {$overstayMins} dakika',?)
-        ")->execute([$uid, $overstayPenalty, $balAfterPenalty]);
+            VALUES (?,?,'debit',?,?)
+        ")->execute([$uid, $overstayPenalty, "Ceza – {$sess['station_name']} / {$sess['charger_code']} ({$overstayMinsRounded} dk)", $balAfterPenalty]);
         if ((int)$uid === (int)$user['id']) $_SESSION['user']['wallet_balance'] = $balAfterPenalty;
         checkWalletAlert($uid, $balAfterPenalty);
     }

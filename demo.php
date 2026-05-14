@@ -21,9 +21,9 @@ if ($method === 'GET') {
     ]);
 }
 
-// POST: admin – offset ayarla (saniye cinsinden)
+// POST: admin veya driver – offset ayarla (saniye cinsinden)
 if ($method === 'POST') {
-    requireRole('admin');
+    requireRole('admin', 'driver');
     $b      = body();
     $add    = (int)($b['add_seconds'] ?? 0); // mevcut offset'e ekle
     $set    = isset($b['set_seconds']) ? (int)$b['set_seconds'] : null; // direkt set
@@ -47,9 +47,9 @@ if ($method === 'POST') {
     ]);
 }
 
-// DELETE: admin – sıfırla
+// DELETE: admin veya driver – sıfırla
 if ($method === 'DELETE') {
-    requireRole('admin');
+    requireRole('admin', 'driver');
     db()->prepare("UPDATE demo_config SET value='0' WHERE `key`='time_offset_seconds'")->execute();
     respond([
         'ok'             => true,

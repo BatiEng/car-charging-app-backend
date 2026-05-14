@@ -20,10 +20,37 @@ function autoCancelExpired() {
     db()->exec("UPDATE reservations SET status = 'cancelled' WHERE id IN ($ids)");
 }
 
+
+// ── GET: charger slot availability (herhangi bir driver görebilir) ──
+if ($method === 'GET' && ($_GET['action'] ?? '') === 'availability') {
+    requireAuth();
+    $chargerId = (int)($_GET['charger_id'] ?? 0);
+    $date      = $_GET['date'] ?? '';
+    if (!$chargerId || !$date) err('charger_id ve date gerekli');
+
+    $stmt = db()->prepare("
+        SELECT start_time, end_time
+        FROM reservations
+        WHERE charger_id = ? AND reservation_date = ?
+          AND status IN ('pending', 'active')
+    ");
+    $stmt->execute([$chargerId, $date]);
+    $rows = $stmt->fetchAll();
+
+    // Sadece HH:MM formatında döndür
+    $taken = array_map(fn($r) => [
+        'start' => substr($r['start_time'], 0, 5),
+        'end'   => substr($r['end_time'],   0, 5),
+    ], $rows);
+
+    respond($taken);
+}
+
 // ── GET: reservations ──
 if ($method === 'GET') {
     $user = requireAuth();
     autoCancelExpired();
+    autoNoShowCancel();
 
     if ($user['role'] === 'admin') {
         $stmt = db()->query("
@@ -153,6 +180,9 @@ if ($method === 'POST') {
 
     // Update session wallet
     $_SESSION['user']['wallet_balance'] = $balance;
+
+    // 200 TL altına düştüyse bildirim gönder
+    checkWalletAlert($uid, $balance);
 
     // Insert reservation
     $ins = db()->prepare("
